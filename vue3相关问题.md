@@ -334,6 +334,417 @@ const UserProfile = () => import(/* webpackChunkName: "user" */ '@/views/UserPro
 
 
 
+# Axios相关
+
+## 封装axios
+
+### 1. 安装依赖
+
+```bash
+npm install axios
+```
+
+
+
+### 2. 创建 Axios 封装文件
+
+`src/utils/http.ts`（具体路径可自定义）
+
+```ts
+import axios from "axios";
+import type {
+  AxiosInstance,
+  AxiosRequestConfig,
+  AxiosResponse,
+  InternalAxiosRequestConfig,
+} from "axios";
+
+// 定义响应数据结构 (根据后端接口调整)
+interface ApiResponse<T = any> {
+  code: number
+  data: T
+  message: string
+}
+
+class Http {
+  private instance: AxiosInstance
+  private readonly baseURL: string
+
+  constructor() {
+    // 从环境变量获取
+    // 需要带上前缀http/https
+    this.baseURL = import.meta.env.VITE_API_BASE_URL 
+      
+    this.instance = axios.create({
+      baseURL: this.baseURL,
+      timeout: 10000,
+      headers: { 'Content-Type': 'application/json' }
+    })
+
+    this.setupInterceptors()
+  }
+
+  // 设置拦截器
+  private setupInterceptors() {
+    // 请求拦截器
+    this.instance.interceptors.request.use(
+      (config: InternalAxiosRequestConfig) => {
+        // 可在此添加 token
+        const token = localStorage.getItem('token')
+        if (token) {
+          config.headers.Authorization = `Bearer ${token}`
+        }
+        return config
+      },
+      (error: any) => {
+        return Promise.reject(error)
+      }
+    )
+
+    // 响应拦截器
+    this.instance.interceptors.response.use(
+      (response: AxiosResponse) => {
+        // 处理响应数据
+        const res = response.data
+        if (res.code !== 200) {
+          // 统一处理业务错误
+          console.error(`API Error: ${res.message}`)
+          return Promise.reject(new Error(res.message || 'Error'))
+        }
+        return res
+      },
+      (error: any) => {
+        // 处理 HTTP 错误
+        const message = error.response?.data?.message || error.message
+        console.error(`HTTP Error: ${message}`)
+        return Promise.reject(error)
+      }
+    )
+  }
+
+  // 封装请求方法
+  public request<T = any>(config: AxiosRequestConfig): Promise<ApiResponse<T>> {
+    return this.instance.request(config)
+  }
+
+  public get<T = any>(url: string, params?: any): Promise<ApiResponse<T>> {
+    return this.request({ method: 'GET', url, params })
+  }
+
+  public post<T = any>(url: string, data?: any): Promise<ApiResponse<T>> {
+    return this.request({ method: 'POST', url, data })
+  }
+
+  public put<T = any>(url: string, data?: any): Promise<ApiResponse<T>> {
+    return this.request({ method: 'PUT', url, data })
+  }
+
+  public delete<T = any>(url: string, params?: any): Promise<ApiResponse<T>> {
+    return this.request({ method: 'DELETE', url, params })
+  }
+}
+
+const http = new Http()
+export default http
+```
+
+
+
+### 3. 配置环境变量
+
+`.env.development`
+
+```ini
+VITE_API_BASE_URL = http://localhost:3000/api
+```
+
+
+
+`.env.production`
+
+```ini
+VITE_API_BASE_URL = https://production-domain.com/api
+```
+
+
+
+### 4. 创建 API 模块统一管理接口
+
+`src/api/user.ts`（具体路径可自定义）
+
+```ts
+import http from '@/utils/http'
+
+// 定义用户数据类型
+interface User {
+  id: number
+  name: string
+  email: string
+}
+
+// 登录参数类型
+interface LoginParams {
+  username: string
+  password: string
+}
+
+// 登录响应类型
+interface LoginResponse {
+  token: string
+  user: User
+}
+
+export const userAPI = {
+  // 用户登录
+  login: (data: LoginParams) => {
+    return http.post<LoginResponse>('/user/login', data)
+  },
+
+  // 获取用户信息
+  getUserInfo: (id: number) => {
+    return http.get<User>(`/user/${id}`)
+  },
+
+  // 更新用户信息
+  updateUser: (id: number, data: Partial<User>) => {
+    return http.put<User>(`/user/${id}`, data)
+  }
+}
+```
+
+
+
+### 6. 全局挂载 (可选)
+
+在`src/main.ts`中
+
+```ts
+import { createApp } from 'vue'
+import App from './App.vue'
+import http from '@/utils/http'
+
+const app = createApp(App)
+
+// 挂载到全局属性
+app.config.globalProperties.$http = http
+
+app.mount('#app')
+```
+
+
+
+### 高级功能扩展
+
+1. **取消请求**：
+
+   ```ts
+   import { CancelTokenSource } from 'axios'
+   
+   const source = CancelToken.source()
+   
+   http.get('/data', {
+     cancelToken: source.token
+   })
+   
+   // 取消请求
+   source.cancel('Operation canceled by user')
+   ```
+
+2. **请求重试**：在响应拦截器中添加重试逻辑
+
+3. **缓存机制**：实现 GET 请求的缓存功能
+
+4. **文件上传**：添加专门的 upload 方法处理文件上传
+
+5. **Mock 数据**：开发环境下集成 mock 服务
+
+
+
+## Axios跨域问题（前端）
+
+**使用开发服务器代理（Vue/React 通用），前端开发服务器充当中间层，将请求转发到目标服务器。**
+
+**该方法==仅在前端开发环境时可用==，生存环境生产环境需使用 Nginx 或后端配置 CORS**
+
+
+
+### 1. 配置代理规则
+
+`vue.config.js` 中：
+
+```javascript
+module.exports = {
+  devServer: {
+    proxy: {
+      '/api': {  // 匹配所有以 /api 开头的请求
+        target: 'http://your-backend.com',  // 目标服务器地址
+        changeOrigin: true,                // 修改请求头中的 Host
+        pathRewrite: {
+          '^/api': ''                      // 重写路径（去掉 /api 前缀）
+        }
+      }
+    }
+  }
+}
+```
+
+`vite.config.ts` 中：
+
+```ts
+import { defineConfig } from 'vite'
+import vue from '@vitejs/plugin-vue'
+
+export default defineConfig({
+  plugins: [vue()],
+  server: {
+    proxy: {
+      // 代理规则1：简单写法
+      '/api': {
+        target: 'http://your-backend.com',  // 后端真实地址
+        changeOrigin: true,                // 启用跨域
+        rewrite: (path) => path.replace(/^\/api/, '') // 重写路径（可选）
+      },	
+      
+      // 代理规则2：更复杂的配置
+      '/graphql': {
+        target: 'http://api.example.com',
+        changeOrigin: true,
+        secure: false,  // 如果是https需要验证证书，开发环境可关闭
+        ws: true        // 代理WebSockets
+      },
+      
+      // 代理规则3：代理特定路径
+      '/uploads': 'http://cdn.example.com' // 简写形式
+    }
+  }
+})
+```
+
+
+
+### 2. 在 Axios 请求中使用代理路径
+
+```javascript
+// 所有以 /api 开头的请求都会被代理
+axios.get('/api/users') // → 实际请求 http://your-backend.com/users
+
+// 或者在封装时使用
+const service = axios.create({
+  baseURL: '/api', // 使用代理前缀（与vite配置中的路径一致）
+  timeout: 5000
+})
+```
+
+
+
+### 3. 多个后端服务的配置
+
+```ts
+export default defineConfig({
+  server: {
+    proxy: {
+      // 主API服务
+      '/api': {
+        target: 'http://api.main.com',
+        changeOrigin: true,
+        rewrite: path => path.replace(/^\/api/, '')
+      },
+      
+      // 支付服务
+      '/pay': {
+        target: 'http://api.payment.com',
+        changeOrigin: true,
+        rewrite: path => path.replace(/^\/pay/, '/v1/payment')
+      },
+      
+      // 文件服务
+      '/files': 'http://cdn.example.com'
+    }
+  }
+})
+```
+
+
+
+### 4. 高级配置选项
+
+如果需要更细粒度的控制
+
+```ts
+proxy: {
+  '/api': {
+    target: 'http://your-backend.com',
+    changeOrigin: true,
+    configure: (proxy, options) => {
+      // 访问代理前的钩子
+      proxy.on('proxyReq', (proxyReq, req, res) => {
+        console.log(`请求代理到: ${req.url}`)
+      })
+      
+      // 错误处理
+      proxy.on('error', (err, req, res) => {
+        res.writeHead(500, {'Content-Type': 'text/plain'})
+        res.end('代理错误: ' + err.message)
+      })
+    }
+  }
+}
+```
+
+
+
+### 5. 环境变量配置
+
+结合环境变量使用更安全
+
+```ini
+# .env.development
+VITE_API_BASE=/api
+VITE_API_TARGET=http://dev-api.example.com
+```
+
+```ts
+// vite.config.ts
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd())
+  
+  return {
+    server: {
+      proxy: {
+        [env.VITE_API_BASE]: {
+          target: env.VITE_API_TARGET,
+          changeOrigin: true,
+          rewrite: path => path.replace(new RegExp(`^${env.VITE_API_BASE}`), '')
+        }
+      }
+    }
+  }
+})
+```
+
+
+
+### 注意事项
+
+1. **仅开发环境有效**：代理只在 `vite dev` 命令下生效，生产环境需要配置 Nginx 或后端解决跨域
+
+2. **路径匹配**：确保请求路径前缀与代理配置一致
+
+3. **重启服务**：修改 vite.config.js 后需要重启开发服务器
+
+4. **携带凭证**：如果需要发送 cookies
+
+   ```ts
+   // axios配置
+   axios.defaults.withCredentials = true
+   
+   // 后端需要配置
+   Access-Control-Allow-Credentials: true
+   Access-Control-Allow-Origin: http://localhost:5173 (不能是 *)
+   ```
+
+
+
 # 组件相关
 
 ## 使用组件
@@ -702,6 +1113,90 @@ const state = reactive({
 
 
 
+# 响应式相关
+
+## `ref` 和 `reactive`
+
+### `ref`
+
+- 接受一个内部值，==返回一个响应式的、可更改的 ref 对象==，此对象只有一个指向其内部值的属性 `.value`。
+- ref 对象是可更改的，也就是说你可以为 `.value` 赋予新的值。它也是响应式的，即所有对 `.value` 的操作都将被追踪，并且写操作会触发与之相关的副作用。
+- ==如果将一个对象赋值给 ref，那么这个对象将通过 [reactive()](https://cn.vuejs.org/api/reactivity-core.html#reactive) 转为具有深层次响应式的对象。==这也意味着如果对象中包含了嵌套的 ref，它们将被深层地解包。
+- 若要避免这种深层次的转换，请使用 [`shallowRef()`](https://cn.vuejs.org/api/reactivity-advanced.html#shallowref) 来替代。
+
+```ts
+const count = ref(0)
+console.log(count.value) // 0
+
+count.value = 1
+console.log(count.value) // 1
+```
+
+
+
+### `reactive`
+
+- 返回一个对象的响应式代理。
+
+- 响应式转换是“深层”的：它会影响到所有嵌套的属性。一个响应式对象也将深层地解包任何 [ref](https://cn.vuejs.org/api/reactivity-core.html#ref) 属性，同时保持响应性。
+
+- 值得注意的是，**当访问到某个响应式数组或 `Map` 这样的原生集合类型中的 ref 元素时，不会执行 ref 的解包**。
+
+  ```ts
+  const books = reactive([ref('Vue 3 Guide')])
+  // 这里需要 .value
+  console.log(books[0].value)
+  
+  const map = reactive(new Map([['count', ref(0)]]))
+  // 这里需要 .value
+  console.log(map.get('count').value)
+  ```
+
+  
+
+- 若要避免深层响应式转换，只想保留对这个对象顶层次访问的响应性，请使用 [shallowReactive()](https://cn.vuejs.org/api/reactivity-advanced.html#shallowreactive) 作替代。
+
+- 返回的对象以及其中嵌套的对象都会通过 [ES Proxy](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Proxy) 包裹，因此**不等于**源对象，建议只使用响应式代理，避免使用原始对象。
+
+
+
+### `ref` 与 `reactive` 对比
+
+| 特性               | `reactive`                       | `ref`                                |
+| :----------------- | :------------------------------- | :----------------------------------- |
+| **适用数据类型**   | 只接受 **对象/数组**             | 接受 **任何类型** (基本类型+对象)    |
+| **返回值**         | 原始对象的 Proxy 代理对象        | 包含 `.value` 属性的 ref 对象        |
+| **访问方式**       | 直接访问属性 (`obj.key`)         | 需要通过 `.value` 访问 (`val.value`) |
+| **模板中使用**     | 需要保持对象引用 (`state.count`) | 自动解包 (模板中直接 `{{ count }}`)  |
+| **响应性丢失风险** | 解构/展开时易丢失响应性          | 通过 `.value` 始终保持响应引用       |
+| **替换整个对象**   | 直接替换会 **丢失响应性**        | 替换 `.value` **保持响应性**         |
+
+
+
+### 将变量恢复到初始状态
+
+看下面的文章
+
+https://blog.csdn.net/weixin_42960907/article/details/138950507
+
+
+
+## `computed` 和 `watch`
+
+### `computed` 与 `watch` 对比
+
+| 特性          | `computed`                  | `watch`              |
+| :------------ | :-------------------------- | :------------------- |
+| **目的**      | 声明式派生值                | 响应式副作用         |
+| **返回值**    | 响应式引用 (Ref)            | 无 (用于执行操作)    |
+| **缓存机制**  | ✅ 有缓存 (依赖不变时复用值) | ❌ 无缓存             |
+| **执行时机**  | 惰性计算 (访问时才计算)     | 立即执行或依赖变化时 |
+| **依赖追踪**  | 自动追踪所有依赖            | 显式指定监听源       |
+| **同步/异步** | 必须同步返回                | 可处理异步操作       |
+| **使用场景**  | 派生数据/模板计算           | 执行副作用/响应变化  |
+
+
+
 
 
 # 生命周期相关
@@ -1002,4 +1497,151 @@ const handleLogin = async () => {
   router.push('/dashboard')
 }
 ```
+
+
+
+## Vue3小问题合辑
+
+https://blog.csdn.net/zhuangvi/article/details/142448741
+
+
+
+## 环境变量配置相关（.env）
+
+### 不同的环境文件
+
+在项目根目录（与 `package.json` 同级）创建以下文件：
+
+| 文件名             | 用途                            |
+| :----------------- | :------------------------------ |
+| `.env`             | 所有环境共享的默认变量          |
+| `.env.development` | 开发环境专用变量 (本地运行)     |
+| `.env.production`  | 生产环境专用变量 (构建生产版本) |
+| `.env.staging`     | 预发布环境变量 (可选)           |
+
+
+
+### 环境文件中添加变量
+
+**示例内容 (.env.development):**
+
+```ini
+# 本地开发环境 API 地址
+VITE_API_BASE_URL = "http://localhost:3000/api"
+```
+
+**示例内容 (.env.production):**
+
+```ini
+# 生产环境 API 地址
+VITE_API_BASE_URL = "https://api.yourdomain.com/v1"
+```
+
+
+
+### 使用环境变量
+
+代码中可以直接使用：
+
+```js
+const baseURL = import.meta.env.VITE_API_BASE_URL;
+```
+
+
+
+### 添加 TypeScript 类型支持 (可选但推荐)
+
+创建 `src/env.d.ts` 文件：
+
+```typescript
+/// <reference types="vite/client" />
+
+interface ImportMetaEnv {
+  readonly VITE_API_BASE_URL: string;
+  // 添加其他环境变量...
+}
+
+interface ImportMeta {
+  readonly env: ImportMetaEnv;
+}
+```
+
+
+
+### 配置不同环境的启动命令
+
+`package.json` 中：
+
+```json
+{
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "build:staging": "vite build --mode staging",
+    "preview": "vite preview"
+  }
+}
+```
+
+
+
+### 使用不同环境变量
+
+```bash
+# 使用 .env.development 中的变量
+npm run dev
+
+# 使用 .env.production 中的变量
+npm run build
+
+# 使用 .env.staging 中的变量
+npm run build:staging
+```
+
+
+
+### 安全注意事项
+
+1. **不要提交敏感信息**，只提交 `.env.example` 作为模板，在 `.gitignore` 中添加
+
+   ```text
+   .env
+   .env.local
+   *.env
+   ```
+
+2. 示例文件 `.env.example`
+
+   ```ini
+   # API 基础地址
+   VITE_API_BASE_URL = "https://api.example.com/v1"
+   ```
+
+
+
+### 高级配置 (vite.config.js)
+
+```js
+export default ({ mode }) => {
+  // 根据环境加载不同配置
+  const env = loadEnv(mode, process.cwd(), "");
+  
+  return {
+    define: {
+      __APP_ENV__: JSON.stringify(env.APP_ENV),
+    },
+    // 其他配置...
+  };
+};
+```
+
+
+
+### 在 HTML 中使用环境变量
+
+```html
+<title>%VITE_APP_NAME%</title>
+```
+
+
 
